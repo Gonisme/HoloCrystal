@@ -4,7 +4,9 @@ Thumbs.db
 
 # Ignore Python cache
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
 # Ignore logs and temp
 *.log
@@ -15,6 +17,10 @@ __pycache__/
 *.mov
 *.avi
 *.blend
+*.fbx
+*.obj
+*.glb
+*.gltf
 
 # Ignore IDE/editor files
 .vscode/
@@ -22,3 +28,8 @@ __pycache__/
 
 # Node.js related (if ever used)
 node_modules/
+
+# LaTeX artifacts (if writing academic docs)
+*.aux
+*.out
+*.toc
