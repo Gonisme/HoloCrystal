@@ -1,0 +1,24 @@
+# Ignore common system files
+.DS_Store
+Thumbs.db
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore logs and temp
+*.log
+*.tmp
+
+# Ignore media files (if not essential to repo)
+*.mp4
+*.mov
+*.avi
+*.blend
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+
+# Node.js related (if ever used)
+node_modules/
