@@ -40,12 +40,14 @@ HoloCrystal（技術代號：**Photon Matrix**）是一項正在開發中的實�
 ---
 
 ## 專案結構
+```
 .
 ├── media/              # 原型照片與影片
 ├── docs/               # 白皮書與技術文件
 ├── src/                # 原始碼與韌體（後續補充）
 ├── experiments/        # 實驗記錄與測試數據
 └── README.md           # 專案總覽
+```
 
 ---
 
