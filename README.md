@@ -31,13 +31,14 @@ For more details, see the [Technical Whitepaper](whitepaper.md).
 ---
 
 ## Repository Structure
+```
 .
 ├── media/               # Images, diagrams, and videos
 ├── docs/                # Technical whitepaper and supporting documents
 ├── src/                 # Control code and firmware (future)
 ├── experiments/         # Lab notes and test data
 └── README.md            # Project overview
-
+```
 ---
 
 ## Getting Started
