@@ -3,15 +3,16 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>HoloCrystal • 粒子矩陣 + 多投影機覆蓋 (ESM/Online)</title>
+<title>HoloCrystal • 粒子矩陣 + 投影機 (Multi-CDN ESM)</title>
 <style>
   html,body{margin:0;height:100%;background:#0f1216;color:#cfd6e4;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  #ui{position:fixed;top:8px;left:8px;right:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  #ui{position:fixed;top:8px;left:8px;right:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;z-index:10}
   #ui label{font-size:12px;opacity:.9}
   #ui input,#ui select{background:#151a20;border:1px solid #2a3240;color:#e7edf8;border-radius:6px;padding:6px 8px;outline:none}
   #ui input[type="number"]{width:72px}
   #ui .btn{padding:6px 10px;border:1px solid #2a3240;border-radius:6px;background:#1b222b;cursor:pointer}
-  #debug{position:fixed;left:12px;bottom:10px;font:12px/1.4 ui-monospace,Consolas,monospace;color:#a9b4c7;opacity:.9;white-space:pre;background:#0f1216aa;border:1px solid #2a3240;border-radius:8px;padding:10px 12px}
+  #debug{position:fixed;left:12px;bottom:10px;font:12px/1.4 ui-monospace,Consolas,monospace;color:#a9b4c7;opacity:.95;white-space:pre;background:#0f1216cc;border:1px solid #2a3240;border-radius:8px;padding:10px 12px;z-index:9;max-width:38ch}
+  #status{position:fixed;left:12px;bottom:10px;font:12px/1.4 ui-monospace,Consolas,monospace;color:#ffd29e;white-space:pre;background:#20160ecc;border:1px solid #5b3a1a;border-radius:8px;padding:8px 10px;z-index:11;display:none}
   canvas{display:block}
 </style>
 </head>
@@ -43,216 +44,230 @@
   <button id="regen" class="btn">重新生成</button>
 </div>
 <pre id="debug"></pre>
+<pre id="status"></pre>
 
+<!-- Boot 模組：嘗試多個 CDN，載入成功後再動態 import 主模組 -->
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/controls/OrbitControls.js';
+const V = '0.149.0';
+const CDN_LIST = [
+  id => (id === 'three' ? `https://cdn.jsdelivr.net/npm/three@${V}/build/three.module.js`
+                        : `https://cdn.jsdelivr.net/npm/three@${V}/examples/jsm/controls/OrbitControls.js`),
+  id => (id === 'three' ? `https://unpkg.com/three@${V}/build/three.module.js`
+                        : `https://unpkg.com/three@${V}/examples/jsm/controls/OrbitControls.js`),
+  id => (id === 'three' ? `https://esm.sh/three@${V}`
+                        : `https://esm.sh/three@${V}/examples/jsm/controls/OrbitControls.js`),
+];
 
-const state = {
-  nx:24, ny:24, nz:24,
-  spacing:0.06,
-  radius:0.005,
-  pcams:2, fov:50, near:0.1, far:5,
-  rad:2.2, face:'+z',
-  autorot:false, autobox:true, dbg:true,
-};
+const $status = document.getElementById('status');
+function setStatus(msg, show=true){ $status.textContent = msg; $status.style.display = show ? 'block':'none'; }
 
-const renderer = new THREE.WebGLRenderer({antialias:true});
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-document.body.appendChild(renderer.domElement);
+async function tryLoad(){
+  let lastErr;
+  for (let i=0;i<CDN_LIST.length;i++){
+    const map = CDN_LIST[i];
+    const threeURL = map('three');
+    const orbitURL = map('orbit');
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0f1216);
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(2.8,1.6,3.6);
+    setStatus(`Loading THREE from #${i+1}:\n${threeURL}`);
+    try {
+      const THREE = await import(threeURL);
+      setStatus(`Loading OrbitControls from #${i+1}:\n${orbitURL}`);
+      const { OrbitControls } = await import(orbitURL);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-
-const grid = new THREE.GridHelper(100, 100, 0x374151, 0x2b3542);
-grid.material.opacity = 0.6; grid.material.transparent = true;
-scene.add(grid);
-
-const boxHelper = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)),
-  new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.6})
-);
-scene.add(boxHelper);
-
-let instanced, projectors=[], frustums=[];
-const tmpObj = new THREE.Object3D();
-
-function buildParticles(){
-  if (instanced) { scene.remove(instanced); instanced.geometry.dispose(); instanced.material.dispose(); }
-  const {nx,ny,nz,spacing,radius} = state;
-
-  const geo = new THREE.SphereGeometry(radius, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({color:0xffffff});
-  const count = nx*ny*nz;
-  instanced = new THREE.InstancedMesh(geo, mat, count);
-  instanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-  const x0 = -(nx-1)*spacing*0.5;
-  const y0 = -(ny-1)*spacing*0.5;
-  const z0 = -(nz-1)*spacing*0.5;
-
-  let i = 0;
-  for (let ix=0; ix<nx; ix++){
-    for (let iy=0; iy<ny; iy++){
-      for (let iz=0; iz<nz; iz++){
-        tmpObj.position.set(x0+ix*spacing, y0+iy*spacing, z0+iz*spacing);
-        tmpObj.updateMatrix();
-        instanced.setMatrixAt(i++, tmpObj.matrix);
-      }
+      setStatus('CDN OK. Initializing…');
+      const modURL = URL.createObjectURL(new Blob([MAIN_MODULE], {type:'text/javascript'}));
+      const mod = await import(modURL);
+      await mod.main({ THREE, OrbitControls });
+      setStatus('', false);
+      return;
+    } catch (e){
+      console.warn('CDN failed', i+1, e);
+      lastErr = e;
+      setStatus(`CDN #${i+1} 失敗，換下一個…\n${e && e.message ? e.message : e}`);
     }
   }
-  instanced.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count*3),3);
-  scene.add(instanced);
-
-  // 更新外框尺寸
-  boxHelper.scale.set(nx*spacing, ny*spacing, nz*spacing);
+  setStatus('所有 CDN 都失敗了 QQ\n請檢查公司網路 / 防毒 / 廣告阻擋，或稍後再試。', true);
+  console.error(lastErr);
 }
 
-function faceToVector(face){
-  switch(face){
-    case '+x': return new THREE.Vector3( 1, 0, 0);
-    case '-x': return new THREE.Vector3(-1, 0, 0);
-    case '+y': return new THREE.Vector3( 0, 1, 0);
-    case '-y': return new THREE.Vector3( 0,-1, 0);
-    case '+z': return new THREE.Vector3( 0, 0, 1);
-    case '-z': return new THREE.Vector3( 0, 0,-1);
-  }
-}
-
-function buildProjectors(){
-  // 清掉舊的
-  projectors.forEach(p=>scene.remove(p.helper));
-  projectors.length = 0; frustums.length = [];
-
-  const n = THREE.MathUtils.clamp(state.pcams,1,4);
-  const dir = faceToVector(state.face).clone();
-  // 四台均勻繞該軸分布（若少於 4 台就等角度抽取）
-  for (let i=0;i<n;i++){
-    const cam = new THREE.PerspectiveCamera(state.fov, 1, state.near, state.far);
-    // 決定基準方向（看向原點）
-    const angle = (i/n) * Math.PI*2;
-    // 取得一個和 dir 垂直的向量
-    const up = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);
-    const right = new THREE.Vector3().crossVectors(up, dir).normalize();
-    const orthoUp = new THREE.Vector3().crossVectors(dir, right).normalize();
-    const pos = new THREE.Vector3()
-      .addScaledVector(right, Math.cos(angle)*state.rad)
-      .addScaledVector(orthoUp, Math.sin(angle)*state.rad)
-      .addScaledVector(dir, 0.0001); // 稍微推一點，避免完全同線
-
-    cam.position.copy(pos);
-    cam.lookAt(0,0,0);
-
-    // 畫視錐（線框）
-    const helper = new THREE.CameraHelper(cam);
-    helper.material.color = new THREE.Color(0xffb74d);
-    scene.add(helper);
-
-    projectors.push({cam, helper});
-  }
-}
-
-const _mat = new THREE.Matrix4();
-const _pos = new THREE.Vector3();
-function updateCoverageColors(){
-  const count = instanced.count;
-  const nx = state.nx, ny=state.ny, nz=state.nz;
-  const colors = instanced.instanceColor.array;
-
-  // 建立每台投影機的 Frustum
-  frustums = projectors.map(p=>{
-    p.cam.updateProjectionMatrix();
-    p.cam.updateMatrixWorld(true);
-    const projView = new THREE.Matrix4().multiplyMatrices(p.cam.projectionMatrix, p.cam.matrixWorldInverse);
-    return new THREE.Frustum().setFromProjectionMatrix(projView);
-  });
-
-  const idxColor = new THREE.Color();
-  for (let i=0;i<count;i++){
-    instanced.getMatrixAt(i, _mat);
-    _pos.setFromMatrixPosition(_mat);
-
-    // 計算被幾台看見
-    let seen = 0;
-    for (const f of frustums){
-      if (f.containsPoint(_pos)) seen++;
-    }
-    // 亮度：0.2, 0.4, 0.6, 1.0
-    const alpha = [0.2, 0.4, 0.6, 1.0][Math.min(seen,4)-1] || 0.2;
-    idxColor.setScalar(alpha);
-    colors[i*3+0] = idxColor.r;
-    colors[i*3+1] = idxColor.g;
-    colors[i*3+2] = idxColor.b;
-  }
-  instanced.instanceColor.needsUpdate = true;
-}
-
-function regenAll(){
-  // 讀 UI
-  ['nx','ny','nz','spacing','radius','pcams','fov','near','far','rad'].forEach(k=>{
-    const v = parseFloat(document.getElementById(k==='rad'?'rad':k).value);
-    state[k] = (k==='nx'||k==='ny'||k==='nz'||k==='pcams') ? Math.max(1,Math.round(v)) : v;
-  });
-  state.face = document.getElementById('face').value;
-  state.autorot = document.getElementById('autorot').checked;
-  state.autobox = document.getElementById('autobox').checked;
-  state.dbg = document.getElementById('dbg').checked;
-
-  boxHelper.visible = state.autobox;
-
-  buildParticles();
-  buildProjectors();
-  updateCoverageColors();
-  writeDebug();
-}
-
-function writeDebug(){
-  if (!state.dbg){ document.getElementById('debug').textContent=''; return; }
-  const extent = [state.nx*state.spacing, state.ny*state.spacing, state.nz*state.spacing];
-  const lines = [
-    'index.html (ESM online)',
-    'THREE r149',
-    `grid : ${state.nx} × ${state.ny} × ${state.nz}`,
-    `spacing : ${state.spacing}`,
-    `radius  : ${state.radius}`,
-    `extent  : ${extent.map(v=>v.toFixed(3)).join(' × ')}`,
-    `cams    : ${state.pcams}, fov:${state.fov}, near:${state.near}, far:${state.far}, R:${state.rad}, face:${state.face}`,
-    `rotate  : ${state.autorot ? 'on':'off'}`
-  ];
-  document.getElementById('debug').textContent = lines.join('\n');
-}
-
-function onResize(){
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
+// --- 主程式（以字串形式嵌入，給 Blob -> dynamic import 用） ---
+const MAIN_MODULE = `
+export async function main({ THREE, OrbitControls }){
+  const state = {
+    nx:24, ny:24, nz:24,
+    spacing:0.06,
+    radius:0.005,
+    pcams:2, fov:50, near:0.1, far:5,
+    rad:2.2, face:'+z',
+    autorot:false, autobox:true, dbg:true,
+  };
+  const renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setSize(innerWidth, innerHeight);
-}
-addEventListener('resize', onResize);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  document.body.appendChild(renderer.domElement);
 
-document.getElementById('regen').addEventListener('click', regenAll);
-['nx','ny','nz','spacing','radius','pcams','fov','near','far','rad','face','autorot','autobox','dbg']
-  .forEach(id => document.getElementById(id).addEventListener('change', regenAll));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1216);
+  const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 100);
+  camera.position.set(2.8,1.6,3.6);
 
-regenAll();
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
 
-const clock = new THREE.Clock();
-renderer.setAnimationLoop(()=>{
-  const t = clock.getElapsedTime();
-  if (state.autorot) {
-    const g = boxHelper;
-    g.rotation.y = t*0.18;
-    g.rotation.x = Math.sin(t*0.4)*0.12;
-    instanced.rotation.copy(g.rotation);
+  const grid = new THREE.GridHelper(100, 100, 0x374151, 0x2b3542);
+  grid.material.opacity = 0.6; grid.material.transparent = true;
+  scene.add(grid);
+
+  const boxHelper = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)),
+    new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.6})
+  );
+  scene.add(boxHelper);
+
+  let instanced, projectors=[], frustums=[];
+  const tmpObj = new THREE.Object3D(), tmpMat = new THREE.Matrix4(), tmpPos = new THREE.Vector3();
+
+  function readUI(){
+    state.nx = Math.max(1, Math.round(parseFloat(document.getElementById('nx').value)));
+    state.ny = Math.max(1, Math.round(parseFloat(document.getElementById('ny').value)));
+    state.nz = Math.max(1, Math.round(parseFloat(document.getElementById('nz').value)));
+    state.spacing = parseFloat(document.getElementById('spacing').value);
+    state.radius  = parseFloat(document.getElementById('radius').value);
+    state.pcams   = Math.max(1, Math.min(4, Math.round(parseFloat(document.getElementById('pcams').value))));
+    state.fov     = parseFloat(document.getElementById('fov').value);
+    state.near    = parseFloat(document.getElementById('near').value);
+    state.far     = parseFloat(document.getElementById('far').value);
+    state.rad     = parseFloat(document.getElementById('rad').value);
+    state.face    = document.getElementById('face').value;
+    state.autobox = document.getElementById('autobox').checked;
+    state.autorot = document.getElementById('autorot').checked;
+    state.dbg     = document.getElementById('dbg').checked;
   }
-  controls.update();
-  renderer.render(scene, camera);
-});
+  function faceToVector(face){
+    switch(face){
+      case '+x': return new THREE.Vector3( 1, 0, 0);
+      case '-x': return new THREE.Vector3(-1, 0, 0);
+      case '+y': return new THREE.Vector3( 0, 1, 0);
+      case '-y': return new THREE.Vector3( 0,-1, 0);
+      case '+z': return new THREE.Vector3( 0, 0, 1);
+      case '-z': return new THREE.Vector3( 0, 0,-1);
+    }
+  }
+
+  function buildParticles(){
+    if (instanced) { scene.remove(instanced); instanced.geometry.dispose(); instanced.material.dispose(); }
+    const {nx,ny,nz,spacing,radius} = state;
+    const geo = new THREE.SphereGeometry(radius, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({color:0xffffff});
+    const count = nx*ny*nz;
+    instanced = new THREE.InstancedMesh(geo, mat, count);
+    instanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const x0 = -(nx-1)*spacing*0.5, y0 = -(ny-1)*spacing*0.5, z0 = -(nz-1)*spacing*0.5;
+    let i = 0;
+    for (let ix=0; ix<nx; ix++)
+      for (let iy=0; iy<ny; iy++)
+        for (let iz=0; iz<nz; iz++){
+          tmpObj.position.set(x0+ix*spacing, y0+iy*spacing, z0+iz*spacing);
+          tmpObj.updateMatrix();
+          instanced.setMatrixAt(i++, tmpObj.matrix);
+        }
+    instanced.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count*3),3);
+    scene.add(instanced);
+    boxHelper.scale.set(nx*spacing, ny*spacing, nz*spacing);
+  }
+
+  function buildProjectors(){
+    projectors.forEach(p=>scene.remove(p.helper));
+    projectors.length = 0; frustums.length = 0;
+    const n = THREE.MathUtils.clamp(state.pcams,1,4);
+    const dir = faceToVector(state.face).clone();
+    for (let i=0;i<n;i++){
+      const cam = new THREE.PerspectiveCamera(state.fov, 1, state.near, state.far);
+      const angle = (i/n)*Math.PI*2;
+      const up = Math.abs(dir.y)>0.9 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);
+      const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+      const orthoUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+      const pos = new THREE.Vector3()
+        .addScaledVector(right, Math.cos(angle)*state.rad)
+        .addScaledVector(orthoUp, Math.sin(angle)*state.rad)
+        .addScaledVector(dir, 0.0001);
+      cam.position.copy(pos); cam.lookAt(0,0,0);
+      const helper = new THREE.CameraHelper(cam);
+      helper.material.color = new THREE.Color(0xffb74d);
+      scene.add(helper);
+      projectors.push({cam, helper});
+    }
+  }
+
+  function updateCoverage(){
+    const count = instanced.count;
+    frustums = projectors.map(p=>{
+      p.cam.updateProjectionMatrix(); p.cam.updateMatrixWorld(true);
+      const pv = new THREE.Matrix4().multiplyMatrices(p.cam.projectionMatrix, p.cam.matrixWorldInverse);
+      return new THREE.Frustum().setFromProjectionMatrix(pv);
+    });
+    const arr = instanced.instanceColor.array, col = new THREE.Color();
+    for (let i=0;i<count;i++){
+      instanced.getMatrixAt(i, tmpMat);
+      tmpPos.setFromMatrixPosition(tmpMat);
+      let seen = 0; for (const f of frustums) if (f.containsPoint(tmpPos)) seen++;
+      const a = [0.2,0.4,0.6,1.0][Math.min(seen,4)-1] ?? 0.2;
+      col.setScalar(a);
+      arr[i*3+0]=col.r; arr[i*3+1]=col.g; arr[i*3+2]=col.b;
+    }
+    instanced.instanceColor.needsUpdate = true;
+  }
+
+  function writeDebug(){
+    const \$debug = document.getElementById('debug');
+    if (!state.dbg){ \$debug.textContent=''; return; }
+    const ext = [state.nx*state.spacing,state.ny*state.spacing,state.nz*state.spacing].map(v=>v.toFixed(3)).join(' × ');
+    \$debug.textContent =
+      'index.html (Multi-CDN)\\nTHREE r149\\n' +
+      \`grid : \${state.nx} × \${state.ny} × \${state.nz}\\n\` +
+      \`spacing : \${state.spacing}\\n\` +
+      \`radius  : \${state.radius}\\n\` +
+      \`extent  : \${ext}\\n\` +
+      \`cams    : \${state.pcams}, fov:\${state.fov}, near:\${state.near}, far:\${state.far}, R:\${state.rad}, face:\${state.face}\\n\` +
+      \`rotate  : \${state.autorot ? 'on':'off'}\\n\`;
+  }
+
+  function regenAll(){
+    readUI();
+    boxHelper.visible = state.autobox;
+    buildParticles();
+    buildProjectors();
+    updateCoverage();
+    writeDebug();
+  }
+
+  function onResize(){
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  }
+  addEventListener('resize', onResize);
+
+  document.getElementById('regen').addEventListener('click', regenAll);
+  ['nx','ny','nz','spacing','radius','pcams','fov','near','far','rad','face','autobox','autorot','dbg']
+    .forEach(id => document.getElementById(id).addEventListener('change', regenAll));
+
+  regenAll();
+
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(()=>{
+    const t = clock.getElapsedTime();
+    if (state.autorot){
+      const r = Math.sin(t*0.4)*0.12;
+      boxHelper.rotation.y = t*0.18; boxHelper.rotation.x = r;
+      if (instanced) instanced.rotation.copy(boxHelper.rotation);
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  });
+}
+`;
+tryLoad();
 </script>
 </body>
 </html>
